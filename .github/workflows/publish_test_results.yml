@@ -38,6 +38,9 @@ jobs:
           files: "artifacts/**/*.xml"
           comment_mode: always # more details here: https://github.com/marketplace/actions/publish-test-results#configuration
           job_summary: true 
+          check_run_annotations: all tests, skipped tests
+          report_suite_logs: error 
+          
 
       # --- Close PR automatically when CI failed ---
       - name: Close PR when tests failed
@@ -63,7 +66,7 @@ jobs:
               ].join("\n");
 
               await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
-              await github.rest.pulls.update({ owner, repo, pull_number: prNumber, state: "closed" });
+              await github.rest.pulls.update({ owner, repo, pull_number: prNumber, state: "draft" });
             } else {
               core.info('Not a pull_request event or PR number missing; skipping auto-close.');
             }
