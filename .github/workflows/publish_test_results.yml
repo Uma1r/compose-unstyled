@@ -2,107 +2,45 @@ name: Publish Test Results (Fork PRs)
 
 on:
   workflow_run:
-    workflows: ["PR Unit Tests"]   # must match your main workflow name
-    types: [completed]
-
-permissions:
-  contents: read
-  checks: write
-  issues: write
-  pull-requests: write
+    workflows: ["PR Unit Tests"]
+    types:
+      - completed
+permissions: {}
 
 jobs:
-  publish-and-close:
+  test-results:
+    name: Test Results
     runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure'
 
-    # Only react to runs that came from pull_request events (not pushes/dispatch)
-    if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'skipped' }}
+    permissions:
+      checks: write
+
+      # needed unless run with comment_mode: off
+      pull-requests: write
+
+      # only needed for private repository
+      contents: read
+
+      # only needed for private repository
+      issues: read
+
+      # required by download step to access artifacts API
+      actions: read
 
     steps:
-      - name: Resolve PR (payload + fallback by commit)
-        id: prmeta
-        uses: actions/github-script@v7
+      - name: Download and Extract Artifacts
+        uses: dawidd6/action-download-artifact@e7466d1a7587ed14867642c2ca74b5bcc1e19a2d
         with:
-          script: |
-            const {owner, repo} = context.repo;
-            const wr = context.payload.workflow_run;
-            const sha = wr.head_sha;
+           run_id: ${{ github.event.workflow_run.id }}
+           path: artifacts
 
-            // 1) Try the workflow_run payload
-            let prNumber = wr.pull_requests?.[0]?.number;
-
-            // 2) Fallback: list PRs associated with this commit
-            if (!prNumber) {
-              const {data: prs} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner, repo, commit_sha: sha,
-              });
-              if (prs.length > 0) prNumber = prs[0].number;
-            }
-
-            if (!prNumber) {
-              core.info(`No PR found for run ${wr.id} @ ${sha}. Nothing to do.`);
-              core.setOutput('has_pr', 'false');
-              return;
-            }
-
-            const {data: pr} = await github.rest.pulls.get({owner, repo, pull_number: prNumber});
-            const isFork = pr.head.repo.full_name !== pr.base.repo.full_name;
-
-            core.info(`Found PR #${prNumber} | fork=${isFork} | head_sha=${sha}`);
-            core.setOutput('has_pr', 'true');
-            core.setOutput('pr_number', String(prNumber));
-            core.setOutput('is_fork', String(isFork));
-            core.setOutput('run_conclusion', wr.conclusion);
-            core.setOutput('head_sha', sha);
-
-      - name: Stop if not a fork PR (log why)
-        if: ${{ steps.prmeta.outputs.has_pr != 'true' || steps.prmeta.outputs.is_fork != 'true' }}
-        run: |
-          echo "Skipping: has_pr=${{ steps.prmeta.outputs.has_pr }} is_fork=${{ steps.prmeta.outputs.is_fork }}"
-
-      - name: Download test-reports artifact
-        if: ${{ steps.prmeta.outputs.has_pr == 'true' && steps.prmeta.outputs.is_fork == 'true' }}
-        uses: dawidd6/action-download-artifact@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          run_id: ${{ github.event.workflow_run.id }}
-          name: test-reports
-          path: ./artifacts
-          if_no_artifact_found: warn
-
-      - name: Publish Unit Test Results (from artifacts)
-        if: ${{ steps.prmeta.outputs.has_pr == 'true' && steps.prmeta.outputs.is_fork == 'true' }}
+      - name: Publish Test Results
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
-          # Pick up XMLs from the downloaded artifact
-          files: artifacts/**/TEST-*.xml
-          # Pass the commit SHA explicitly so the action can associate results even if PR linkage is flaky
-          commit: ${{ steps.prmeta.outputs.head_sha }}
-          check_name: "Unit Test Results"
-          comment_mode: always
-          job_summary: true
-
-      - name: Close PR when tests failed (fork PRs)
-        if: ${{ steps.prmeta.outputs.has_pr == 'true' && steps.prmeta.outputs.is_fork == 'true' && steps.prmeta.outputs.run_conclusion == 'failure' }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const {owner, repo} = context.repo;
-            const prNumber = Number("${{ steps.prmeta.outputs.pr_number }}");
-
-            const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-            if (pr.data.state !== "open") {
-              core.info(`PR #${prNumber} is not open, skipping close.`);
-              return;
-            }
-
-            const body = [
-              "❌ **CI failed.**",
-              "",
-              "A detailed test summary has been posted (see Checks / PR comment).",
-              "",
-              "Please run locally (`./gradlew jvmTest`), push fixes, and then **re-open this PR**."
-            ].join("\n");
-
-            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
-            await github.rest.pulls.update({ owner, repo, pull_number: prNumber, state: "closed" });
+          commit: ${{ github.event.workflow_run.head_sha }}
+          event_file: artifacts/Event File/event.json
+          event_name: ${{ github.event.workflow_run.event }}
+          files: "artifacts/**/*.xml"
+          comment_mode: always # more details here: https://github.com/marketplace/actions/publish-test-results#configuration
+          job_summary: true 
