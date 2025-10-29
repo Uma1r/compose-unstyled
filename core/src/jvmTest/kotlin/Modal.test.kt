@@ -15,7 +15,6 @@ import kotlin.test.Test
 @OptIn(ExperimentalTestApi::class)
 class ModalTest {
 
-    
     @Test
     fun `test that fails`() = runTestSuite {
         error("This test fails")
