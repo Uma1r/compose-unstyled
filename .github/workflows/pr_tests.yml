@@ -52,58 +52,86 @@ jobs:
             exit 1
           fi
 
-      - name: Publish Unit Test Results (PR comment + Check)
-
-        if: always()
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        with:
-          files: |
-            **/build/test-results/**/TEST-*.xml
-        
-          check_name: "Unit Test Results"        
-          comment_mode: always # more details here: https://github.com/marketplace/actions/publish-test-results#configuration
-          job_summary: true 
-          
-      - name: Upload test reports
+      # --- Upload artifacts for the workflow_run publisher ---
+      - name: Upload Event File
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports
+          name: Event File
+          path: ${{ github.event_path }}
+
+      - name: Upload Test Results (JUnit XML)
+        if: always()  # we want them even on failure
+        uses: actions/upload-artifact@v4
+        with:
+          name: Test Results
           path: |
-            **/build/test-results
+            **/build/test-results/**/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload HTML Test Reports (optional)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HTML Test Reports
+          path: |
             **/build/reports/tests
           if-no-files-found: ignore
           retention-days: 7
 
-  close_pr_on_failure:
-    needs: pr_checks
-    if: ${{ always() && github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      issues: write
-    steps:
-      - name: Close PR when tests failed (same-repo PRs)
-        if: ${{ needs.pr_checks.result == 'failure' && github.event.pull_request.state == 'open' }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const {owner, repo} = context.repo;
-            const pr = context.payload.pull_request;
+      # - name: Publish Unit Test Results (PR comment + Check)
 
-            // Skip forks here; companion workflow will close those.
-            if (pr.head.repo.full_name !== pr.base.repo.full_name) {
-              core.info('PR is from a fork; skipping close here.');
-              return;
-            }
+      #   if: always()
+      #   uses: EnricoMi/publish-unit-test-result-action@v2
+      #   with:
+      #     files: |
+      #       **/build/test-results/**/TEST-*.xml
+        
+      #     check_name: "Unit Test Results"        
+      #     comment_mode: always # more details here: https://github.com/marketplace/actions/publish-test-results#configuration
+      #     job_summary: true 
+          
+      # - name: Upload test reports
+      #   if: always()
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: test-reports
+      #     path: |
+      #       **/build/test-results
+      #       **/build/reports/tests
+      #     if-no-files-found: ignore
+      #     retention-days: 7
 
-            const body = [
-              "❌ **CI failed.**",
-              "",
-              "A detailed test summary has been posted (see Checks / PR comment).",
-              "",
-              "Please run locally (`./gradlew jvmTest`), push fixes, and then **re-open this PR**."
-            ].join("\n");
+  # close_pr_on_failure:
+  #   needs: pr_checks
+  #   if: ${{ always() && github.event_name == 'pull_request' }}
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     pull-requests: write
+  #     issues: write
+  #   steps:
+  #     - name: Close PR when tests failed (same-repo PRs)
+  #       if: ${{ needs.pr_checks.result == 'failure' && github.event.pull_request.state == 'open' }}
+  #       uses: actions/github-script@v7
+  #       with:
+  #         script: |
+  #           const {owner, repo} = context.repo;
+  #           const pr = context.payload.pull_request;
 
-            await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
-            await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: "closed" });
+  #           // Skip forks here; companion workflow will close those.
+  #           if (pr.head.repo.full_name !== pr.base.repo.full_name) {
+  #             core.info('PR is from a fork; skipping close here.');
+  #             return;
+  #           }
+
+  #           const body = [
+  #             "❌ **CI failed.**",
+  #             "",
+  #             "A detailed test summary has been posted (see Checks / PR comment).",
+  #             "",
+  #             "Please run locally (`./gradlew jvmTest`), push fixes, and then **re-open this PR**."
+  #           ].join("\n");
+
+  #           await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
+  #           await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: "closed" });
