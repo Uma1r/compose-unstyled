@@ -11,36 +11,61 @@ jobs:
   test-results:
     name: Test Results
     runs-on: ubuntu-latest
+    # only run if CI concluded success/failure (skip if cancelled)
     if: github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure'
 
     permissions:
-      checks: write
-
-      # needed unless run with comment_mode: off
-      pull-requests: write
-
-      # only needed for private repository
-      contents: read
-
-      # only needed for private repository
-      issues: read
-
-      # required by download step to access artifacts API
-      actions: read
+      checks: write           # create/update the Check run
+      pull-requests: write    # add/update PR comment (if comment_mode != off)
+      contents: read          # needed for private repos
+      issues: read            # needed for private repos
+      actions: read           # required to download artifacts
 
     steps:
       - name: Download and Extract Artifacts
         uses: dawidd6/action-download-artifact@e7466d1a7587ed14867642c2ca74b5bcc1e19a2d
         with:
-           run_id: ${{ github.event.workflow_run.id }}
-           path: artifacts
+          run_id: ${{ github.event.workflow_run.id }}
+          path: artifacts
 
-      - name: Publish Test Results
+      - name: Publish Test Results (PR comment + Check)
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
+          # tie results to the correct commit on the PR
           commit: ${{ github.event.workflow_run.head_sha }}
+          # pass through the original event context (PR vs push, etc.)
           event_file: artifacts/Event File/event.json
           event_name: ${{ github.event.workflow_run.event }}
+          # pick up all JUnit XMLs we uploaded
           files: "artifacts/**/*.xml"
           comment_mode: always # more details here: https://github.com/marketplace/actions/publish-test-results#configuration
           job_summary: true 
+
+      # --- Optional: Close PR automatically when CI failed ---
+      - name: Close PR when tests failed
+        if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'artifacts/Event File/event.json';
+            const ev = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+            // Only act on pull_request events
+            if (ev && ev.pull_request && ev.pull_request.number) {
+              const prNumber = ev.pull_request.number;
+              const {owner, repo} = context.repo;
+
+              const body = [
+                "❌ **CI failed.**",
+                "",
+                "A detailed test summary has been published (see the PR Check and comment above).",
+                "",
+                "Please run locally (`./gradlew jvmTest`), push fixes, and then **re-open this PR**."
+              ].join("\n");
+
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+              await github.rest.pulls.update({ owner, repo, pull_number: prNumber, state: "closed" });
+            } else {
+              core.info('Not a pull_request event or PR number missing; skipping auto-close.');
+            }
