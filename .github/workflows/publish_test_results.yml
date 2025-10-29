@@ -1,8 +1,8 @@
-name: Publish Test Results
+name: Publish Test Results (Fork PRs)
 
 on:
   workflow_run:
-    workflows: ["PR Unit Tests"]   # must match: name: PR Unit Tests
+    workflows: ["PR Unit Tests"]   # must match your main workflow name
     types: [completed]
 
 permissions:
@@ -14,65 +14,82 @@ permissions:
 jobs:
   publish-and-close:
     runs-on: ubuntu-latest
-    # Only react to PR-triggered runs; ignore pushes, etc.
+
+    # Only react to runs that came from pull_request events (not pushes/dispatch)
     if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'skipped' }}
 
     steps:
-      - name: Read PR details & fork status
-        id: pr
+      - name: Resolve PR (payload + fallback by commit)
+        id: prmeta
         uses: actions/github-script@v7
         with:
           script: |
             const {owner, repo} = context.repo;
-            const prNumber = context.payload.workflow_run.pull_requests?.[0]?.number;
+            const wr = context.payload.workflow_run;
+            const sha = wr.head_sha;
+
+            // 1) Try the workflow_run payload
+            let prNumber = wr.pull_requests?.[0]?.number;
+
+            // 2) Fallback: list PRs associated with this commit
             if (!prNumber) {
-              core.info('No PR attached to this workflow_run.');
+              const {data: prs} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner, repo, commit_sha: sha,
+              });
+              if (prs.length > 0) prNumber = prs[0].number;
+            }
+
+            if (!prNumber) {
+              core.info(`No PR found for run ${wr.id} @ ${sha}. Nothing to do.`);
               core.setOutput('has_pr', 'false');
               return;
             }
-            const pr = await github.rest.pulls.get({owner, repo, pull_number: prNumber});
-            const isFork = pr.data.head.repo.full_name !== pr.data.base.repo.full_name;
 
+            const {data: pr} = await github.rest.pulls.get({owner, repo, pull_number: prNumber});
+            const isFork = pr.head.repo.full_name !== pr.base.repo.full_name;
+
+            core.info(`Found PR #${prNumber} | fork=${isFork} | head_sha=${sha}`);
             core.setOutput('has_pr', 'true');
             core.setOutput('pr_number', String(prNumber));
             core.setOutput('is_fork', String(isFork));
-            core.setOutput('run_conclusion', context.payload.workflow_run.conclusion);
+            core.setOutput('run_conclusion', wr.conclusion);
+            core.setOutput('head_sha', sha);
 
-      - name: Stop if not a fork PR
-        if: ${{ steps.pr.outputs.has_pr != 'true' || steps.pr.outputs.is_fork != 'true' }}
-        run: echo "Not a fork PR (or no PR). Nothing to do."
+      - name: Stop if not a fork PR (log why)
+        if: ${{ steps.prmeta.outputs.has_pr != 'true' || steps.prmeta.outputs.is_fork != 'true' }}
+        run: |
+          echo "Skipping: has_pr=${{ steps.prmeta.outputs.has_pr }} is_fork=${{ steps.prmeta.outputs.is_fork }}"
 
-      # Download the artifact produced by your main workflow
       - name: Download test-reports artifact
-        if: ${{ steps.pr.outputs.has_pr == 'true' && steps.pr.outputs.is_fork == 'true' }}
+        if: ${{ steps.prmeta.outputs.has_pr == 'true' && steps.prmeta.outputs.is_fork == 'true' }}
         uses: dawidd6/action-download-artifact@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           run_id: ${{ github.event.workflow_run.id }}
-          name: test-reports              # matches your main workflow's artifact name
+          name: test-reports
           path: ./artifacts
-          if_no_artifact_found: ignore
+          if_no_artifact_found: warn
 
-      # Publish results now that we are running in the base repo context (write perms)
       - name: Publish Unit Test Results (from artifacts)
-        if: ${{ steps.pr.outputs.has_pr == 'true' && steps.pr.outputs.is_fork == 'true' }}
+        if: ${{ steps.prmeta.outputs.has_pr == 'true' && steps.prmeta.outputs.is_fork == 'true' }}
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
+          # Pick up XMLs from the downloaded artifact
           files: artifacts/**/TEST-*.xml
+          # Pass the commit SHA explicitly so the action can associate results even if PR linkage is flaky
+          commit: ${{ steps.prmeta.outputs.head_sha }}
           check_name: "Unit Test Results"
           comment_mode: always
           job_summary: true
 
-      # Mirror your same policy: close fork PRs if the main run failed
       - name: Close PR when tests failed (fork PRs)
-        if: ${{ steps.pr.outputs.has_pr == 'true' && steps.pr.outputs.is_fork == 'true' && steps.pr.outputs.run_conclusion == 'failure' }}
+        if: ${{ steps.prmeta.outputs.has_pr == 'true' && steps.prmeta.outputs.is_fork == 'true' && steps.prmeta.outputs.run_conclusion == 'failure' }}
         uses: actions/github-script@v7
         with:
           script: |
             const {owner, repo} = context.repo;
-            const prNumber = Number("${{ steps.pr.outputs.pr_number }}");
+            const prNumber = Number("${{ steps.prmeta.outputs.pr_number }}");
 
-            // Double-check it's still open
             const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
             if (pr.data.state !== "open") {
               core.info(`PR #${prNumber} is not open, skipping close.`);
