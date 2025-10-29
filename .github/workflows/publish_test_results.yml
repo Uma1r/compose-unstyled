@@ -1,4 +1,4 @@
-name: Publish Test Results (Fork PRs)
+name: Publish Test Results
 
 on:
   workflow_run:
@@ -31,9 +31,7 @@ jobs:
       - name: Publish Test Results (PR comment + Check)
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
-          # tie results to the correct commit on the PR
           commit: ${{ github.event.workflow_run.head_sha }}
-          # pass through the original event context (PR vs push, etc.)
           event_file: artifacts/Event File/event.json
           event_name: ${{ github.event.workflow_run.event }}
           # pick up all JUnit XMLs we uploaded
@@ -41,7 +39,7 @@ jobs:
           comment_mode: always # more details here: https://github.com/marketplace/actions/publish-test-results#configuration
           job_summary: true 
 
-      # --- Optional: Close PR automatically when CI failed ---
+      # --- Close PR automatically when CI failed ---
       - name: Close PR when tests failed
         if: ${{ github.event.workflow_run.conclusion == 'failure' }}
         uses: actions/github-script@v7
@@ -57,11 +55,11 @@ jobs:
               const {owner, repo} = context.repo;
 
               const body = [
-                "❌ **CI failed.**",
+                "❌ **Some tests failed.**",
                 "",
                 "A detailed test summary has been published (see the PR Check and comment above).",
                 "",
-                "Please run locally (`./gradlew jvmTest`), push fixes, and then **re-open this PR**."
+                "Please re-run unit tests locally (`./gradlew jvmTest`), push fixes and then **re-open this PR**."
               ].join("\n");
 
               await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
